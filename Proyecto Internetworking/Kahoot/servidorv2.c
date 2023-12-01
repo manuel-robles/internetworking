@@ -3,6 +3,7 @@
 #include <string.h>
 #include <winsock2.h>
 #include <windows.h>
+#include <ctype.h>
 
 #define PORT 8080
 #define MAX_CLIENTS 10
@@ -48,7 +49,7 @@ void handle_client(SOCKET client_socket) {
 
         //Convertimos la respuesta para que no importe si es con may o min
         //probar
-        for (int j=0; j<strlen(client_response); ++j){
+       for (int j=0; j<strlen(client_response); ++j){
             client_response[j]=tolower(client_response[j]);
         }
 
