@@ -16,52 +16,14 @@ typedef struct {
     int correct_answer;
 } Question;
 
-void send_question(SOCKET client_socket) {
-    Question new_question;
-
-    printf("Ingrese la pregunta: ");
-    fgets(new_question.question, MAX_QUESTION_LENGTH, stdin);
-    new_question.question[strlen(new_question.question) - 1] = '\0';  // Eliminar el salto de línea
-
-    for (int i = 0; i < 4; ++i) {
-        printf("Ingrese la respuesta %d: ", i + 1);
-        fgets(new_question.answers[i], MAX_ANSWER_LENGTH, stdin);
-        new_question.answers[i][strlen(new_question.answers[i]) - 1] = '\0';  // Eliminar el salto de línea
-    }
-
-    printf("Ingrese la respuesta correcta (1-4): ");
-    scanf("%d", &new_question.correct_answer);
-    getchar();  // Consumir el salto de línea residual
-
-    send(client_socket, (const char*)&new_question, sizeof(Question), 0);
+void send_question(SOCKET client_socket, const Question *question) {
+    send(client_socket, (const char*)question, sizeof(Question), 0);
 }
 
-void receive_question_and_answer(SOCKET client_socket) {
-    Question received_question;
-    int score;
-
-    for (int i = 0; i < 10; ++i) {
-        // Recibe la pregunta del servidor
-        recv(client_socket, (char*)&received_question, sizeof(Question), 0);
-
-        // Muestra la pregunta al usuario y espera la respuesta
-        printf("Pregunta recibida:\n");
-        printf("Pregunta: %s\n", received_question.question);
-        for (int j = 0; j < 4; ++j) {
-            printf("Respuesta %d: %s\n", j + 1, received_question.answers[j]);
-        }
-
-        printf("Ingrese sus respuestas (por ejemplo, 1234): ");
-        char client_answers[5];
-        fgets(client_answers, sizeof(client_answers), stdin);
-
-        // Envía las respuestas al servidor
-        send(client_socket, client_answers, sizeof(client_answers), 0);
-
-        // Recibe el puntaje del servidor
-        recv(client_socket, (char*)&score, sizeof(int), 0);
-
-        printf("Puntaje obtenido: %d\n\n", score);
+void receive_question(SOCKET client_socket, Question *received_question) {
+    if (recv(client_socket, (char*)received_question, sizeof(Question), 0) <= 0) {
+        printf("Error al recibir la pregunta o conexión cerrada.\n");
+        exit(1);
     }
 }
 
@@ -76,6 +38,7 @@ int main() {
         return 1;
     }
 
+    // Crear socket del cliente
     client_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (client_socket == INVALID_SOCKET) {
         printf("Error al crear el socket del cliente\n");
@@ -83,10 +46,12 @@ int main() {
         return 1;
     }
 
+    // Configurar la dirección del servidor
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
     server_addr.sin_port = htons(PORT);
 
+    // Conectar al servidor
     if (connect(client_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
         printf("Error al conectar con el servidor\n");
         closesocket(client_socket);
@@ -94,19 +59,81 @@ int main() {
         return 1;
     }
 
-    // Cliente elige el rol
-    int role;
-    printf("Seleccione su rol (0 para subir preguntas, 1 para responder preguntas): ");
-    scanf("%d", &role);
+    do {
+        // Rol del cliente (0 o 1)
+        int role;
+        printf("\nSeleccione su rol (0 para subir preguntas, 1 para responder preguntas, -1 para salir): ");
+        scanf("%d", &role);
 
-    if (role == 0) {
-        // Subir preguntas
-        send_question(client_socket);
-    } else {
-        // Responder preguntas
-        receive_question_and_answer(client_socket);
-    }
+        if (role == -1) {
+            // Salir del programa
+            break;
+        }
 
+        send(client_socket, (const char*)&role, sizeof(int), 0);
+
+        if (role == 0) {
+            // Cliente con rol 0 (Subir preguntas)
+            Question questions[10];
+
+            int num_questions;
+            do {
+                // Limpiar el búfer del teclado antes de cada lectura
+                fflush(stdin);
+
+                printf("¿Cuántas preguntas desea subir (máximo 10)? ");
+                scanf("%d", &num_questions);
+
+                if (num_questions > 10 || num_questions <= 0) {
+                    printf("Por favor, ingrese un número válido (entre 1 y 10).\n");
+                }
+            } while (num_questions > 10 || num_questions <= 0);
+
+            for (int i = 0; i < num_questions; ++i) {
+                // Limpiar el búfer del teclado antes de cada lectura
+                fflush(stdin);
+
+                printf("Ingrese la pregunta %d: ", i + 1);
+                scanf(" %[^\n]", questions[i].question);
+
+                for (int j = 0; j < 4; ++j) {
+                    printf("Ingrese la respuesta %d para la pregunta %d: ", j + 1, i + 1);
+                    scanf(" %[^\n]", questions[i].answers[j]);
+                }
+
+                printf("Ingrese la respuesta correcta (1-4) para la pregunta %d: ", i + 1);
+                scanf("%d", &questions[i].correct_answer);
+
+                // Enviar la pregunta al servidor
+                send_question(client_socket, &questions[i]);
+
+                // Esperar confirmación del servidor antes de enviar la siguiente pregunta
+                char confirmation;
+                recv(client_socket, &confirmation, sizeof(char), 0);
+            }
+        } else if (role == 1) {
+            // Cliente con rol 1 (Recibir y mostrar preguntas)
+            Question received_questions[10];  // Array para almacenar hasta 10 preguntas
+
+            for (int i = 0; i < 10; ++i) {
+                // Recibir pregunta del servidor
+                receive_question(client_socket, &received_questions[i]);
+                // Enviar confirmación al servidor para indicar que se recibió la pregunta
+                char confirmation = '1';
+                send(client_socket, &confirmation, sizeof(char), 0);
+            }
+
+            // Mostrar preguntas al cliente con rol 1
+            printf("\nPreguntas recibidas desde el servidor:\n");
+            for (int i = 0; i < 10; ++i) {
+                if (strlen(received_questions[i].question) > 0) {
+                    printf("Pregunta %d: %s\n", i + 1, received_questions[i].question);
+                }
+            }
+        }
+    } while (1);
+
+    // Cerrar socket y limpiar Winsock
     closesocket(client_socket);
     WSACleanup();
 

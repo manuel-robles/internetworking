@@ -2,10 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <winsock2.h>
-#include <process.h>
 
 #define PORT 12345
-#define MAX_CLIENTS 10
 #define MAX_QUESTION_LENGTH 256
 #define MAX_ANSWER_LENGTH 128
 
@@ -17,75 +15,22 @@ typedef struct {
     int correct_answer;
 } Question;
 
-typedef struct {
-    SOCKET socket;
-    int role;  // 0: Subir pregunta, 1: Responder pregunta
-} ClientInfo;
-
-Question questions[10];  // Array para almacenar las preguntas
-int current_question = 0;  // Índice de la pregunta actual
-
-void receive_question(ClientInfo *client) {
-    Question received_question;
-    recv(client->socket, (char*)&received_question, sizeof(Question), 0);
-
-    // Almacena la pregunta recibida en el array
-    questions[current_question++] = received_question;
-
-    // Aquí puedes procesar la pregunta recibida, por ejemplo, mostrarla en el servidor
-    printf("Pregunta recibida:\n");
-    printf("Pregunta: %s\n", received_question.question);
-    for (int i = 0; i < 4; ++i) {
-        printf("Respuesta %d: %s\n", i + 1, received_question.answers[i]);
+void receive_question(SOCKET client_socket, Question *received_question) {
+    if (recv(client_socket, (char*)received_question, sizeof(Question), 0) <= 0) {
+        printf("Error al recibir la pregunta o conexión cerrada.\n");
+        exit(1);
     }
-    printf("Respuesta correcta: %d\n\n", received_question.correct_answer);
 }
 
-int calculate_score(char *client_answers, char *correct_answers) {
-    int score = 0;
-    for (int i = 0; i < strlen(correct_answers); ++i) {
-        if (client_answers[i] == correct_answers[i]) {
-            score++;
-        }
-    }
-    return score;
-}
-
-void handle_client(void *arg) {
-    ClientInfo *client = (ClientInfo*)arg;
-
-    if (client->role == 0) {
-        // Cliente que sube preguntas
-        receive_question(client);
-    } else {
-        // Cliente que responde preguntas
-        for (int i = 0; i < 10; ++i) {
-            // Envía la pregunta al cliente
-            send(client->socket, (const char*)&questions[i], sizeof(Question), 0);
-
-            // Recibe las respuestas del cliente
-            char client_answers[5];
-            recv(client->socket, client_answers, sizeof(client_answers), 0);
-
-            // Calcula el puntaje
-            int score = calculate_score(client_answers, questions[i].answers[questions[i].correct_answer - 1]);
-
-            // Envía el puntaje al cliente
-            send(client->socket, (const char*)&score, sizeof(int), 0);
-        }
-    }
-
-    printf("Cliente desconectado\n");
-    closesocket(client->socket);
-    free(client);
-    _endthreadex(0);
+void send_question(SOCKET client_socket, const Question *question) {
+    send(client_socket, (const char*)question, sizeof(Question), 0);
 }
 
 int main() {
     WSADATA wsa;
     SOCKET server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
-    int addr_len;
+    int addr_len = sizeof(client_addr);
 
     // Inicializar Winsock
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -93,6 +38,7 @@ int main() {
         return 1;
     }
 
+    // Crear socket del servidor
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == INVALID_SOCKET) {
         printf("Error al crear el socket del servidor\n");
@@ -100,46 +46,104 @@ int main() {
         return 1;
     }
 
+    // Configurar la dirección del servidor
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
+    // Vincular el socket a la dirección del servidor
     if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        printf("Error al enlazar el socket del servidor\n");
+        printf("Error al vincular el socket\n");
         closesocket(server_socket);
         WSACleanup();
         return 1;
     }
 
-    if (listen(server_socket, MAX_CLIENTS) == SOCKET_ERROR) {
-        printf("Error al escuchar en el socket del servidor\n");
+    // Escuchar conexiones entrantes
+    if (listen(server_socket, 1) == SOCKET_ERROR) {
+        printf("Error al configurar el modo de escucha\n");
         closesocket(server_socket);
         WSACleanup();
         return 1;
     }
 
-    printf("Servidor esperando conexiones...\n");
+    printf("Esperando conexiones...\n");
 
-    addr_len = sizeof(struct sockaddr_in);
-
-    // Usar un bucle infinito para aceptar múltiples clientes
-    while (1) {
-        client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
-        printf("Cliente conectado\n");
-
-        // Crea una estructura para almacenar la información del cliente
-        ClientInfo *client = (ClientInfo*)malloc(sizeof(ClientInfo));
-        client->socket = client_socket;
-
-        // Asigna un rol al cliente (0 o 1) alternadamente
-        client->role = current_question % 2;
-
-        // Crea un hilo para manejar el cliente concurrentemente
-        _beginthread(handle_client, 0, (void*)client);
-
-        current_question++;
+    // Aceptar conexión entrante
+    client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
+    if (client_socket == INVALID_SOCKET) {
+        printf("Error al aceptar la conexión\n");
+        closesocket(server_socket);
+        WSACleanup();
+        return 1;
     }
 
+    // Rol del cliente (0 o 1)
+    int role;
+    recv(client_socket, (char*)&role, sizeof(int), 0);
+
+    if (role == 0) {
+        // Cliente con rol 0 (Subir preguntas)
+        Question questions[10];  // Array para almacenar hasta 10 preguntas
+
+        int num_questions;
+        do {
+            // Limpiar el búfer del teclado antes de cada lectura
+            fflush(stdin);
+            
+            printf("¿Cuántas preguntas desea subir (máximo 10)? ");
+            scanf("%d", &num_questions);
+
+            if (num_questions > 10 || num_questions <= 0) {
+                printf("Por favor, ingrese un número válido (entre 1 y 10).\n");
+            }
+        } while (num_questions > 10 || num_questions <= 0);
+
+        for (int i = 0; i < num_questions; ++i) {
+            // Limpiar el búfer del teclado antes de cada lectura
+            fflush(stdin);
+
+            printf("Ingrese la pregunta %d: ", i + 1);
+            scanf(" %[^\n]", questions[i].question);
+
+            for (int j = 0; j < 4; ++j) {
+                printf("Ingrese la respuesta %d para la pregunta %d: ", j + 1, i + 1);
+                scanf(" %[^\n]", questions[i].answers[j]);
+            }
+
+            printf("Ingrese la respuesta correcta (1-4) para la pregunta %d: ", i + 1);
+            scanf("%d", &questions[i].correct_answer);
+
+            // Enviar la pregunta al servidor
+            send_question(client_socket, &questions[i]);
+
+            // Esperar confirmación del servidor antes de enviar la siguiente pregunta
+            char confirmation;
+            recv(client_socket, &confirmation, sizeof(char), 0);
+        }
+    } else if (role == 1) {
+        // Cliente con rol 1 (Recibir y mostrar preguntas)
+        Question received_questions[10];  // Array para almacenar hasta 10 preguntas
+
+        for (int i = 0; i < 10; ++i) {
+            // Recibir pregunta del cliente con rol 0
+            receive_question(client_socket, &received_questions[i]);
+            // Enviar confirmación al cliente con rol 0 para indicar que se recibió la pregunta
+            char confirmation = '1';
+            send(client_socket, &confirmation, sizeof(char), 0);
+        }
+
+        // Mostrar preguntas al cliente con rol 1
+        printf("\nPreguntas recibidas desde el cliente con rol 0:\n");
+        for (int i = 0; i < 10; ++i) {
+            if (strlen(received_questions[i].question) > 0) {
+                printf("Pregunta %d: %s\n", i + 1, received_questions[i].question);
+            }
+        }
+    }
+
+    // Cerrar sockets y limpiar Winsock
+    closesocket(client_socket);
     closesocket(server_socket);
     WSACleanup();
 
